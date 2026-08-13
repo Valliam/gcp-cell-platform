@@ -1,5 +1,7 @@
 # gcp-cell-platform
 
+[![validate](https://github.com/Valliam/gcp-cell-platform/actions/workflows/validate.yml/badge.svg)](https://github.com/Valliam/gcp-cell-platform/actions/workflows/validate.yml)
+
 Terraform for **cell-based GCP infrastructure**: every cell is an isolated GCP
 project with its own network, GKE cluster, database, encryption keys, security
 perimeter, observability and budget. Cells are grouped under *ventures*
@@ -10,13 +12,17 @@ Singapore and Jakarta, with two different data-residency envelopes — enough to
 prove the pattern generalises without turning the repository into something
 nobody has time to read.
 
-> **Status.** This is a reference implementation, not a running system. Every
-> module and stack passes `terraform fmt`, `terraform validate`, `tflint` and
-> `checkov`, and the cell registry and policy gates run green in CI — all
-> without cloud credentials. It has **not** been applied end to end against a
-> live GCP organization, and nothing below claims otherwise. Where a control
-> could not be exercised (Assured Workloads), it is implemented behind a flag
-> and the reason is written down rather than glossed over.
+> **Status.** This is a reference implementation, not a running system.
+>
+> All sixteen CI jobs pass with **no cloud credentials**: `terraform fmt`,
+> `terraform validate` across eleven modules and stacks, `tflint`, `checkov`
+> (245 passed, 0 failed, 3 skipped — each skip carries its reasoning inline),
+> the cell registry checks, and the policy gate.
+>
+> It has **not** been applied end to end against a live GCP organization, and
+> nothing below claims otherwise. Where a control could not be exercised
+> (Assured Workloads), it is implemented behind a flag and the reason is
+> written down rather than glossed over.
 
 ---
 
@@ -238,9 +244,11 @@ Being explicit about the edges is more useful than pretending there are none.
   baseline. What runs inside them is another repository's job; the boundary is
   Config Sync's `policy_dir`.
 - **Binary Authorization.** The registry enforces immutable tags and scans on
-  push, but admission-time signature verification is not wired up — see
-  [ADR 0008](docs/adr/0008-manual-cross-region-promotion.md) for the related
-  promotion reasoning and the note on what closing this gap requires.
+  push, and images are pulled by digest, but admission-time signature
+  verification is not wired up: it needs an attestor and a signing key held by
+  the build pipeline, which lives outside this repository. The gap is recorded
+  as an inline `checkov:skip` on the cluster resource rather than hidden in a
+  config file, so anyone running the scanner sees it.
 - **Multi-cell traffic management.** Cells are independent by design. A global
   load balancer steering traffic across cells is a real need as a venture grows,
   and it is not modelled here.
