@@ -1,0 +1,102 @@
+# Environment promotion: dev → staging → prod, in that order, for one venture.
+#
+# The gate is a GitHub Environment with required reviewers, not a step in a
+# script. That distinction matters: approval state lives outside the workflow
+# run, is audited by GitHub, and cannot be bypassed by editing the workflow file
+# on a branch.
+#
+# Promotion applies the *same commit* to each successive environment. There is
+# no separate prod branch and no cherry-picking, so what reached prod is
+# provably what was tested in staging.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      venture:
+        description: "Venture to promote"
+        required: true
+        type: choice
+        options: [acme, globex]
+      through:
+        description: "Highest environment to promote to"
+        required: true
+        default: staging
+        type: choice
+        options: [dev, staging, prod]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_VERSION: "1.15.8"
+
+jobs:
+  dev:
+    name: apply dev
+    if: vars.WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.venture }}-dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/apply-cells
+        with:
+          venture: ${{ inputs.venture }}
+          env: dev
+          wif_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.TF_APPLY_SERVICE_ACCOUNT }}
+          state_bucket: ${{ vars.STATE_BUCKET }}
+          billing_account: ${{ vars.BILLING_ACCOUNT }}
+          terraform_version: ${{ env.TF_VERSION }}
+
+  staging:
+    name: apply staging
+    needs: dev
+    if: contains(fromJSON('["staging","prod"]'), inputs.through)
+    runs-on: ubuntu-latest
+    # Requires a reviewer configured on this environment in repo settings.
+    environment: ${{ inputs.venture }}-staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/apply-cells
+        with:
+          venture: ${{ inputs.venture }}
+          env: staging
+          wif_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.TF_APPLY_SERVICE_ACCOUNT }}
+          state_bucket: ${{ vars.STATE_BUCKET }}
+          billing_account: ${{ vars.BILLING_ACCOUNT }}
+          terraform_version: ${{ env.TF_VERSION }}
+
+  soak:
+    name: soak
+    needs: staging
+    if: inputs.through == 'prod'
+    runs-on: ubuntu-latest
+    steps:
+      # A deliberate pause between staging and prod. Most infrastructure defects
+      # that survive a plan review show up as an alert within the hour, and this
+      # is what gives them the chance to.
+      - name: wait for staging to prove itself
+        run: |
+          echo "Staging applied. Soaking for ${{ vars.SOAK_MINUTES || 60 }} minutes before prod."
+          sleep $(( ${{ vars.SOAK_MINUTES || 60 }} * 60 ))
+
+  prod:
+    name: apply prod
+    needs: soak
+    if: inputs.through == 'prod'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.venture }}-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/apply-cells
+        with:
+          venture: ${{ inputs.venture }}
+          env: prod
+          wif_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.TF_APPLY_SERVICE_ACCOUNT }}
+          state_bucket: ${{ vars.STATE_BUCKET }}
+          billing_account: ${{ vars.BILLING_ACCOUNT }}
+          terraform_version: ${{ env.TF_VERSION }}

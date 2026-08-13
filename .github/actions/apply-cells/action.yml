@@ -1,0 +1,88 @@
+# Applies every cell belonging to one venture + environment.
+#
+# Extracted as a composite action because promote.yml runs it three times with
+# identical logic. Copying it per environment is how dev and prod quietly start
+# behaving differently.
+name: apply-cells
+description: Apply all cells for a venture/environment pair
+
+inputs:
+  venture:
+    description: Venture name
+    required: true
+  env:
+    description: Environment (dev, staging, prod)
+    required: true
+  wif_provider:
+    description: Workload Identity provider resource name
+    required: true
+  service_account:
+    description: Service account to impersonate
+    required: true
+  state_bucket:
+    description: Terraform state bucket
+    required: true
+  billing_account:
+    description: Billing account id
+    required: true
+  terraform_version:
+    description: Terraform version
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.wif_provider }}
+        service_account: ${{ inputs.service_account }}
+
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform_version }}
+        terraform_wrapper: false
+
+    - name: apply cells
+      shell: bash
+      env:
+        VENTURE: ${{ inputs.venture }}
+        CELL_ENV: ${{ inputs.env }}
+        STATE_BUCKET: ${{ inputs.state_bucket }}
+        BILLING_ACCOUNT: ${{ inputs.billing_account }}
+        GITHUB_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        # Select cells by the env declared inside the contract rather than by
+        # filename convention. A cell named prod-syd that says `env: staging`
+        # should be treated as staging; the contract is the truth.
+        mapfile -t cells < <(
+          for f in ventures/"$VENTURE"/cells/*.yaml; do
+            if [ "$(yq -r '.env' "$f")" = "$CELL_ENV" ]; then echo "$f"; fi
+          done
+        )
+
+        if [ ${#cells[@]} -eq 0 ]; then
+          echo "No $CELL_ENV cells for $VENTURE — nothing to do."
+          exit 0
+        fi
+
+        for cell_file in "${cells[@]}"; do
+          name=$(basename "$cell_file" .yaml)
+          echo "::group::apply $VENTURE/$name"
+
+          # -reconfigure because the same working directory is reused for every
+          # cell in the loop, each with a different state prefix.
+          terraform -chdir=stacks/cell init -input=false -reconfigure \
+            -backend-config="bucket=$STATE_BUCKET" \
+            -backend-config="prefix=cells/$VENTURE/$name"
+
+          terraform -chdir=stacks/cell apply -input=false -auto-approve \
+            -var="cell_file=../../$cell_file" \
+            -var="state_bucket=$STATE_BUCKET" \
+            -var="billing_account=$BILLING_ACCOUNT" \
+            -var="github_repository=$GITHUB_REPO" \
+            -var="config_sync_repo=https://github.com/$GITHUB_REPO"
+
+          echo "::endgroup::"
+        done

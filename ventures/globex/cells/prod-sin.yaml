@@ -1,0 +1,55 @@
+# International cell. Same modules, same pipeline, different geography — the
+# only regional knowledge in the whole repo is these two region strings plus
+# the venture's allowed_locations. There is no per-region branch in any module.
+venture: globex
+cell: prod-sin
+env: prod
+region: asia-southeast1 # Singapore
+
+dr:
+  standby_region: asia-southeast2 # Jakarta
+  rpo_minutes: 5
+  rto_minutes: 30
+
+network:
+  # Cell CIDRs are allocated from a registry (docs/adr/0003) and never overlap,
+  # so any two cells can later be peered or fronted by a shared load balancer
+  # without renumbering.
+  subnet_cidr: 10.40.0.0/20
+  pods_cidr: 10.40.16.0/20
+  services_cidr: 10.40.32.0/22
+  master_cidr: 172.16.40.0/28
+
+gke:
+  release_channel: REGULAR
+  private_endpoint: true
+  node_pools:
+    - name: general
+      machine_type: n2d-standard-4
+      min_nodes: 3
+      max_nodes: 9
+      disk_size_gb: 100
+  quotas:
+    cpu: "36"
+    memory: 144Gi
+    pods: "400"
+
+database:
+  version: POSTGRES_16
+  tier: db-custom-2-8192
+  availability: REGIONAL
+  disk_size_gb: 100
+
+security:
+  cmek: true
+  vpc_service_perimeter: true
+  breakglass_group: group:breakglass-globex@example.com
+
+observability:
+  uptime_check_host: api.sg.globex.example.com
+  notification_channels:
+    - platform-oncall
+
+budget:
+  monthly_aud: 3200
+  alert_thresholds: [0.5, 0.9, 1.0]

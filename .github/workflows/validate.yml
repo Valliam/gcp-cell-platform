@@ -1,0 +1,134 @@
+# Runs on every pull request with no cloud credentials at all.
+#
+# That constraint is deliberate: a fork, a first-time contributor and a
+# dependabot bump all get the same full-quality feedback, and the checks that
+# matter most — schema, policy, residency, addressing — never depend on someone
+# having configured a secret.
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.15.8"
+
+jobs:
+  format:
+    name: terraform fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive -diff
+
+  validate:
+    name: terraform validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - modules/project
+          - modules/network
+          - modules/gke
+          - modules/database
+          - modules/kms
+          - modules/observability
+          - modules/budget
+          - modules/cell
+          - stacks/bootstrap
+          - stacks/org
+          - stacks/cell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # -backend=false is what makes this credential-free: providers are
+      # downloaded and the configuration is type-checked, but no state is read.
+      - name: init
+        working-directory: ${{ matrix.dir }}
+        run: terraform init -backend=false -input=false
+
+      - name: validate
+        working-directory: ${{ matrix.dir }}
+        run: terraform validate -no-color
+
+  lint:
+    name: tflint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - run: tflint --init
+      - run: tflint --recursive --format compact
+
+  security-scan:
+    name: checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install checkov==3.2.334
+      # Static analysis of the HCL itself. Skips are listed in .checkov.yml with
+      # a reason each — an unexplained skip is worse than a finding.
+      - run: checkov --directory . --framework terraform --config-file .checkov.yml
+
+  cell-contracts:
+    name: cell registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml==6.0.2
+
+      # Schema, residency envelope, CIDR overlap, project id length.
+      - name: validate cell contracts
+        run: python3 scripts/validate_cells.py --root .
+
+      # The rendered Kubernetes baseline must match the contracts it came from.
+      - name: check rendered manifests are current
+        run: python3 scripts/render_platform.py --root . --check
+
+  policy:
+    name: policy audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install conftest
+        run: |
+          version=0.56.0
+          curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${version}/conftest_${version}_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin conftest
+
+      # Environment-conditional compliance rules: what is acceptable in dev and
+      # forbidden in prod.
+      - name: audit cell contracts
+        run: conftest test --policy policy ventures/*/cells/*.yaml
+
+      # The policies themselves are tested. A compliance gate nobody has proven
+      # can fail is not a gate.
+      - name: prove the policies reject a bad cell
+        run: |
+          if conftest test --policy policy policy/fixtures/noncompliant-prod.yaml; then
+            echo "::error::policy/fixtures/noncompliant-prod.yaml should have been rejected"
+            exit 1
+          fi
+          echo "✓ policy correctly rejected the non-compliant fixture"

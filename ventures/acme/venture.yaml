@@ -1,0 +1,32 @@
+# Venture-level configuration. A venture is a product line; it owns a folder in
+# the GCP resource hierarchy and one or more cells beneath it.
+#
+# `data_residency` is the single most important field here: it drives the
+# `gcp.resourceLocations` org policy applied to the venture folder, which is a
+# hard, org-enforced boundary. A cell cannot opt out of it — a cell.yaml that
+# names a region outside these values fails policy check in CI *and* would be
+# rejected by the org policy at apply time. Defence in depth, on purpose.
+venture: acme
+display_name: Acme Health
+
+data_residency:
+  # Australian regulated workload: data must not leave AU.
+  allowed_locations:
+    - in:australia-southeast1-locations # Sydney
+    - in:australia-southeast2-locations # Melbourne
+  # Assured Workloads gives contractual + technical residency guarantees on top
+  # of the org policy. Disabled in this sample repo — see docs/adr/0007.
+  assured_workloads: false
+
+owners:
+  # Groups, never individual users. Group membership is managed in Cloud
+  # Identity, outside Terraform, so that offboarding a person does not require
+  # a Terraform apply.
+  platform: group:platform-acme@example.com
+  security: group:security@example.com
+
+billing:
+  # Cost attribution: every resource in every cell inherits these labels, and
+  # `constraints/compute.requireLabels`-style policy audit rejects unlabelled
+  # resources in CI.
+  cost_centre: cc-4471

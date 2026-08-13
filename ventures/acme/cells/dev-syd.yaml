@@ -1,0 +1,52 @@
+# Dev trades durability for cost: zonal database, no cross-region standby, no
+# perimeter. Policy (policy/cell.rego) permits this *only* because env is dev —
+# the same settings on a prod cell fail the CI policy gate.
+venture: acme
+cell: dev-syd
+env: dev
+region: australia-southeast1
+
+dr:
+  standby_region: null # no standby in dev — accepted data-loss risk
+  rpo_minutes: 1440
+  rto_minutes: 480
+
+network:
+  subnet_cidr: 10.22.0.0/20
+  pods_cidr: 10.22.16.0/20
+  services_cidr: 10.22.32.0/22
+  master_cidr: 172.16.22.0/28
+
+gke:
+  release_channel: RAPID # dev absorbs upstream churn first, on purpose
+  private_endpoint: false # developers reach the API server over the internet, IP-allowlisted
+  node_pools:
+    - name: general
+      machine_type: e2-standard-2
+      min_nodes: 1
+      max_nodes: 3
+      disk_size_gb: 50
+  quotas:
+    cpu: "12"
+    memory: 48Gi
+    pods: "150"
+
+database:
+  version: POSTGRES_16
+  tier: db-f1-micro
+  availability: ZONAL
+  disk_size_gb: 10
+
+security:
+  cmek: false # dev uses Google-managed keys; CMEK is mandatory from staging up
+  vpc_service_perimeter: false
+  breakglass_group: null
+
+observability:
+  uptime_check_host: null
+  notification_channels:
+    - platform-lowpri
+
+budget:
+  monthly_aud: 300
+  alert_thresholds: [1.0]

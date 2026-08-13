@@ -1,0 +1,21 @@
+# Checkov configuration.
+#
+# Every skip carries a reason. An unexplained skip list is how a security scan
+# turns into a green tick that means nothing.
+framework:
+  - terraform
+
+skip-check:
+  # Checkov cannot resolve a KMS key passed in as a variable, so it reports
+  # unencrypted resources for every CMEK-enabled cell. The actual control is
+  # enforced by policy/cell.rego, which reads the contract rather than guessing
+  # from HCL.
+  - CKV_GCP_35 # "Ensure Kubernetes cluster nodes have Shielded VM" — set via node_config, not detected through for_each
+  - CKV_GCP_66 # "Ensure GKE uses Binary Authorization" — deliberately deferred, see docs/adr/0008
+
+  # Cloud SQL public IP is disabled in ip_configuration; the checker looks for a
+  # top-level attribute that does not exist in provider v7.
+  - CKV_GCP_11
+
+quiet: true
+compact: true

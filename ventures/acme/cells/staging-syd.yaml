@@ -1,0 +1,52 @@
+# Staging is a structurally identical cell to prod-syd — same modules, same
+# code path, same DR topology — scaled down. That is the point: if staging and
+# prod differ in shape rather than size, staging stops predicting prod.
+venture: acme
+cell: staging-syd
+env: staging
+region: australia-southeast1
+
+dr:
+  standby_region: australia-southeast2
+  rpo_minutes: 15
+  rto_minutes: 60
+
+network:
+  subnet_cidr: 10.21.0.0/20
+  pods_cidr: 10.21.16.0/20
+  services_cidr: 10.21.32.0/22
+  master_cidr: 172.16.21.0/28
+
+gke:
+  release_channel: REGULAR
+  private_endpoint: true
+  node_pools:
+    - name: general
+      machine_type: n2d-standard-2
+      min_nodes: 1
+      max_nodes: 4
+      disk_size_gb: 50
+  quotas:
+    cpu: "16"
+    memory: 64Gi
+    pods: "200"
+
+database:
+  version: POSTGRES_16
+  tier: db-custom-1-3840
+  availability: REGIONAL
+  disk_size_gb: 20
+
+security:
+  cmek: true
+  vpc_service_perimeter: true
+  breakglass_group: group:breakglass-acme@example.com
+
+observability:
+  uptime_check_host: api.staging.acme.example.com
+  notification_channels:
+    - platform-oncall
+
+budget:
+  monthly_aud: 900
+  alert_thresholds: [0.9, 1.0]

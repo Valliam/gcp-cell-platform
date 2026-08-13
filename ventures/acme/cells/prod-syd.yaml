@@ -1,0 +1,63 @@
+# A cell is one isolated GCP project: its own VPC, GKE cluster, database, KMS
+# keyring, log sink, budget and security perimeter. Nothing is shared with
+# another cell except the container images it pulls and the org policies it
+# inherits.
+#
+# This file is the entire interface. `make plan CELL=acme/prod-syd` renders it
+# through modules/cell and produces the whole environment.
+venture: acme
+cell: prod-syd
+env: prod
+region: australia-southeast1 # Sydney
+
+dr:
+  standby_region: australia-southeast2 # Melbourne
+  # Targets are asserted, not aspirational: the failover drill in
+  # docs/runbooks/failover.md measures against these numbers and the
+  # replica-lag alert in modules/observability fires at rpo_minutes / 2.
+  rpo_minutes: 5
+  rto_minutes: 30
+
+network:
+  subnet_cidr: 10.20.0.0/20
+  pods_cidr: 10.20.16.0/20
+  services_cidr: 10.20.32.0/22
+  master_cidr: 172.16.20.0/28
+
+gke:
+  release_channel: REGULAR
+  # Private nodes AND private control plane. Operators reach the API server
+  # through IAP, never a public endpoint — see docs/adr/0005.
+  private_endpoint: true
+  node_pools:
+    - name: general
+      machine_type: n2d-standard-4
+      min_nodes: 3
+      max_nodes: 12
+      disk_size_gb: 100
+  quotas:
+    cpu: "40"
+    memory: 160Gi
+    pods: "500"
+
+database:
+  version: POSTGRES_16
+  tier: db-custom-2-8192
+  availability: REGIONAL # synchronous standby in a second Sydney zone
+  disk_size_gb: 100
+
+security:
+  cmek: true
+  vpc_service_perimeter: true
+  # Break-glass access is time-bound and audited; the group is empty in steady
+  # state and populated by an incident commander during an incident.
+  breakglass_group: group:breakglass-acme@example.com
+
+observability:
+  uptime_check_host: api.acme.example.com
+  notification_channels:
+    - platform-oncall
+
+budget:
+  monthly_aud: 4000
+  alert_thresholds: [0.5, 0.9, 1.0]

@@ -1,0 +1,25 @@
+# Second venture, deliberately with a *different* residency envelope. This is
+# what proves the cell factory generalises: acme is AU-only, globex has expanded
+# into Singapore, and neither one required a code change — only a venture.yaml
+# and a cell.yaml.
+#
+# The `gcp.resourceLocations` policy is applied per venture folder, not at the
+# org root, precisely so that one venture's expansion cannot silently widen
+# another venture's residency boundary.
+venture: globex
+display_name: Globex Logistics
+
+data_residency:
+  allowed_locations:
+    - in:australia-southeast1-locations
+    - in:australia-southeast2-locations
+    - in:asia-southeast1-locations # Singapore
+    - in:asia-southeast2-locations # Jakarta
+  assured_workloads: false
+
+owners:
+  platform: group:platform-globex@example.com
+  security: group:security@example.com
+
+billing:
+  cost_centre: cc-8802

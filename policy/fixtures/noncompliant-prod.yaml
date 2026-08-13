@@ -1,0 +1,66 @@
+# A deliberately non-compliant prod cell, used to prove the policy gate works.
+#
+# CI asserts that conftest REJECTS this file. Without a test like this, a typo
+# that makes every rule silently unreachable would look exactly like a clean
+# compliance run.
+#
+# Violations present, one per rule in policy/cell.rego:
+#   - no dr.standby_region        (prod requires cross-region DR)
+#   - RPO 60 / RTO 240            (exceeds prod objectives)
+#   - ZONAL database              (prod requires REGIONAL)
+#   - cmek false                  (mandatory from staging up)
+#   - public control plane        (must be private outside dev)
+#   - no VPC-SC perimeter         (required in prod)
+#   - min_nodes 1, max_nodes 1    (below floor, and cannot scale)
+#   - no quotas                   (always required)
+#   - no break-glass group        (required in prod)
+#   - alerts not routed to oncall (required in prod)
+#   - no uptime check host        (required in prod)
+#   - no budget                   (always required)
+#   - RAPID channel in prod       (warn)
+venture: acme
+cell: bad-prod
+env: prod
+region: australia-southeast1
+
+dr:
+  standby_region: null
+  rpo_minutes: 60
+  rto_minutes: 240
+
+network:
+  subnet_cidr: 10.99.0.0/20
+  pods_cidr: 10.99.16.0/20
+  services_cidr: 10.99.32.0/22
+  master_cidr: 172.16.99.0/28
+
+gke:
+  release_channel: RAPID
+  private_endpoint: false
+  node_pools:
+    - name: general
+      machine_type: e2-small
+      min_nodes: 1
+      max_nodes: 1
+      disk_size_gb: 20
+  quotas: {}
+
+database:
+  version: POSTGRES_16
+  tier: db-f1-micro
+  availability: ZONAL
+  disk_size_gb: 10
+
+security:
+  cmek: false
+  vpc_service_perimeter: false
+  breakglass_group: null
+
+observability:
+  uptime_check_host: null
+  notification_channels:
+    - platform-lowpri
+
+budget:
+  monthly_aud: null
+  alert_thresholds: []

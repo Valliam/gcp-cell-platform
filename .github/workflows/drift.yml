@@ -1,0 +1,144 @@
+# Drift detection.
+#
+# Infrastructure as code is a claim, and this is the job that checks whether the
+# claim is still true. Anything applied by hand during an incident, any console
+# change, any resource mutated by another controller shows up here — with the
+# cell named — instead of surfacing months later as a confusing plan diff in an
+# unrelated pull request.
+name: drift
+
+on:
+  schedule:
+    # 19:00 UTC = 06:00 AEDT. Findings are waiting when the team starts, rather
+    # than paging someone at 3am for something that is not an outage.
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+env:
+  TF_VERSION: "1.15.8"
+
+jobs:
+  enumerate:
+    name: enumerate cells
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.list.outputs.cells }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          cells=$(ls -d ventures/*/cells/*.yaml | sed 's|ventures/||; s|/cells/|/|; s|\.yaml$||')
+          echo "cells=$(echo "$cells" | jq -R -s -c 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+
+  detect:
+    name: drift ${{ matrix.cell }}
+    needs: enumerate
+    if: vars.WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJSON(needs.enumerate.outputs.cells) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.TF_PLAN_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: init
+        working-directory: stacks/cell
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.STATE_BUCKET }}" \
+            -backend-config="prefix=cells/${{ matrix.cell }}"
+
+      - name: plan
+        id: plan
+        working-directory: stacks/cell
+        # -detailed-exitcode: 0 = no changes, 2 = drift, 1 = error. Distinguishing
+        # 2 from 1 is the whole point — a broken plan and a drifted cell need
+        # different responses.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          terraform plan -input=false -lock=false -detailed-exitcode -no-color \
+            -var="cell_file=../../ventures/$(dirname ${{ matrix.cell }})/cells/$(basename ${{ matrix.cell }}).yaml" \
+            -var="state_bucket=${{ vars.STATE_BUCKET }}" \
+            -var="billing_account=${{ vars.BILLING_ACCOUNT }}" \
+            -var="github_repository=${{ github.repository }}" \
+            -var="config_sync_repo=https://github.com/${{ github.repository }}" \
+            | tee plan.txt
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: raise or close the drift issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const cell = '${{ matrix.cell }}';
+            const code = '${{ steps.plan.outputs.exit }}';
+            const title = `Drift detected: ${cell}`;
+
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'drift',
+            });
+            const existing = open.find(i => i.title === title);
+
+            if (code === '2') {
+              let plan = fs.readFileSync('stacks/cell/plan.txt', 'utf8').slice(0, 55000);
+              const body = [
+                `The nightly plan for \`${cell}\` is not empty. Something changed outside Terraform.`,
+                '',
+                '1. Read the plan below and work out what changed and who changed it (the audit sink in the security project has the answer).',
+                '2. If the change was legitimate, encode it in the cell contract or a module and let the pipeline reapply it.',
+                '3. If it was not, revert it and record why it was possible.',
+                '',
+                '<details><summary>plan</summary>',
+                '',
+                '```terraform',
+                plan,
+                '```',
+                '',
+                '</details>',
+              ].join('\n');
+
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number, body: `Still drifting as of ${context.sha.slice(0,7)}.`,
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  title, body, labels: ['drift'],
+                });
+              }
+            } else if (code === '0' && existing) {
+              // Self-closing: a drift issue that stays open after the drift is
+              // resolved trains people to ignore drift issues.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body: 'Plan is clean again — closing.',
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, state: 'closed',
+              });
+            } else if (code === '1') {
+              core.setFailed(`Plan failed for ${cell} — this is a broken pipeline, not drift.`);
+            }

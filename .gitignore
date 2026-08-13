@@ -1,0 +1,22 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Plan output can contain resource ids and generated values.
+plan.txt
+*.tfplan
+
+# Local, machine-specific inputs consumed by the Makefile.
+.state-bucket
+.billing-account
+*.auto.tfvars
+!config.auto.tfvars
+
+.DS_Store
+__pycache__/
+
+# Only root modules need a lock file; child module locks are ignored by
+# Terraform and would carry single-platform hashes.
+modules/*/.terraform.lock.hcl

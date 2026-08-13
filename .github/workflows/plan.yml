@@ -1,0 +1,124 @@
+# Speculative plan for the cells a pull request actually touches.
+#
+# Only the changed cells are planned. Planning all of them on every PR would
+# turn a one-line change to one cell into a wait proportional to the size of the
+# fleet, and reviewers stop reading plans they have to scroll past.
+name: plan
+
+on:
+  pull_request:
+    paths:
+      - "ventures/**"
+      - "modules/**"
+      - "stacks/cell/**"
+
+permissions:
+  contents: read
+  id-token: write # required to mint the WIF token
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.15.8"
+
+jobs:
+  discover:
+    name: discover affected cells
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.detect.outputs.cells }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        name: detect
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          changed=$(git diff --name-only "$base"...HEAD)
+
+          # A change under modules/ or stacks/cell/ affects every cell, because
+          # they all instantiate the same code.
+          if echo "$changed" | grep -qE '^(modules|stacks/cell)/'; then
+            echo "shared code changed -> planning every cell"
+            cells=$(ls -d ventures/*/cells/*.yaml | sed 's|ventures/||; s|/cells/|/|; s|\.yaml$||')
+          else
+            cells=$(echo "$changed" \
+              | grep -E '^ventures/[^/]+/cells/[^/]+\.yaml$' \
+              | sed 's|ventures/||; s|/cells/|/|; s|\.yaml$||' || true)
+          fi
+
+          if [ -z "$cells" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "cells=[]" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "cells=$(echo "$cells" | jq -R -s -c 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  plan:
+    name: plan ${{ matrix.cell }}
+    needs: discover
+    # Skips cleanly rather than failing red when the repository has not been
+    # wired to a GCP organization. The validate workflow still gives full
+    # feedback in that state.
+    if: needs.discover.outputs.any == 'true' && vars.WIF_PROVIDER != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJSON(needs.discover.outputs.cells) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read-only identity. A pull request cannot obtain an apply credential
+      # even if its workflow file asks for one — the binding in
+      # stacks/bootstrap restricts apply to refs/heads/main.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.TF_PLAN_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: init
+        working-directory: stacks/cell
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.STATE_BUCKET }}" \
+            -backend-config="prefix=cells/${{ matrix.cell }}"
+
+      - name: plan
+        id: plan
+        working-directory: stacks/cell
+        run: |
+          set -o pipefail
+          terraform plan -input=false -lock=false -no-color \
+            -var="cell_file=../../ventures/$(dirname ${{ matrix.cell }})/cells/$(basename ${{ matrix.cell }}).yaml" \
+            -var="state_bucket=${{ vars.STATE_BUCKET }}" \
+            -var="billing_account=${{ vars.BILLING_ACCOUNT }}" \
+            -var="github_repository=${{ github.repository }}" \
+            -var="config_sync_repo=https://github.com/${{ github.repository }}" \
+            | tee plan.txt
+
+      - name: comment plan
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('stacks/cell/plan.txt', 'utf8');
+            const limit = 60000;
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n\n… truncated; see the job log for the full plan.';
+            }
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Plan — \`${{ matrix.cell }}\`\n\n<details><summary>show</summary>\n\n\`\`\`terraform\n${plan}\n\`\`\`\n\n</details>`,
+            });
