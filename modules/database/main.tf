@@ -254,6 +254,10 @@ resource "google_pubsub_topic" "rotation" {
   project = var.project_id
   name    = "${var.name}-secret-rotation"
   labels  = var.labels
+
+  # The message names a secret that is due for rotation. That is a hint worth
+  # protecting with the same key as the secret itself.
+  kms_key_name = var.secrets_kms_key
 }
 
 # The Secret Manager service agent must be able to publish to the topic, or

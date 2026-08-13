@@ -24,6 +24,16 @@ variable "github_repository" {
   description = "owner/repo permitted to deploy into cells via Workload Identity Federation."
 }
 
+variable "rbac_security_group" {
+  type        = string
+  default     = null
+  description = <<-EOT
+    Google Group driving Kubernetes RBAC across cells. GKE requires the literal
+    name `gke-security-groups@<domain>`; team groups are nested inside it. Left
+    null here because it depends on a real Cloud Identity domain.
+  EOT
+}
+
 variable "config_sync_repo" {
   type        = string
   description = "Repository Config Sync reads the Kubernetes baseline from."

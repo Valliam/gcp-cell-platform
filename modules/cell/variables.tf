@@ -148,6 +148,12 @@ variable "github_repository" {
   description = "owner/repo permitted to impersonate this cell's deploy account."
 }
 
+variable "rbac_security_group" {
+  type        = string
+  default     = null
+  description = "Google Group driving Kubernetes RBAC; must be named gke-security-groups@<domain>."
+}
+
 variable "config_sync_repo" {
   type        = string
   description = "Git repository Config Sync pulls the Kubernetes baseline from."

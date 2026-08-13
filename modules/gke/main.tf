@@ -11,6 +11,7 @@ locals {
 }
 
 resource "google_container_cluster" "this" {
+  # checkov:skip=CKV_GCP_66:Binary Authorization is a known, documented gap — see README "What is deliberately not here". The registry enforces immutable tags and scans on push, but admission-time signature verification needs an attestor and a signing key in the build pipeline, which lives outside this repository. Closing it is tracked, not forgotten.
   provider = google-beta
 
   project  = var.project_id
@@ -27,6 +28,32 @@ resource "google_container_cluster" "this" {
 
   network    = var.network_id
   subnetwork = var.subnetwork_id
+
+  resource_labels = var.labels
+
+  # Client certificate authentication is a static credential that cannot be
+  # revoked without recreating the cluster. Off explicitly rather than by
+  # relying on the current default.
+  master_auth {
+    client_certificate_config {
+      issue_client_certificate = false
+    }
+  }
+
+  # Makes pod-to-pod traffic between nodes visible to VPC flow logs. Without it
+  # intra-node traffic is invisible, which is the traffic an attacker moving
+  # laterally inside the cluster would generate.
+  enable_intranode_visibility = true
+
+  # Binds Kubernetes RBAC to Google Groups, so cluster access is granted by
+  # group membership and revoked by removing someone from a group — no
+  # per-cluster RoleBinding to chase during offboarding.
+  dynamic "authenticator_groups_config" {
+    for_each = var.rbac_security_group == null ? [] : [1]
+    content {
+      security_group = var.rbac_security_group
+    }
+  }
 
   networking_mode = "VPC_NATIVE"
   ip_allocation_policy {

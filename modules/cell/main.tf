@@ -152,6 +152,7 @@ module "gke" {
   node_pools      = var.cell.gke.node_pools
 
   node_service_account = module.project.node_service_account
+  rbac_security_group  = var.rbac_security_group
 
   etcd_kms_key      = local.use_cmek ? module.kms_primary[0].keys["gke"] : null
   boot_disk_kms_key = local.use_cmek ? module.kms_primary[0].keys["gke"] : null

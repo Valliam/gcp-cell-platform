@@ -57,6 +57,12 @@ validate: ## terraform validate every module and stack
 lint: ## tflint (requires tflint on PATH)
 	tflint --recursive --format compact
 
+# Not part of `check` because checkov pulls a large dependency tree; CI runs it
+# on every pull request. Needs Python 3.11 or 3.12 — 3.13+ is not yet supported
+# by this pinned version.
+scan: ## checkov static analysis (requires checkov on PATH)
+	checkov --directory . --framework terraform --config-file .checkov.yml
+
 cells: ## Validate the cell registry: schema, residency, CIDR overlap, naming
 	python3 scripts/validate_cells.py --root .
 

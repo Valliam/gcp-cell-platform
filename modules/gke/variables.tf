@@ -108,6 +108,21 @@ variable "deletion_protection" {
   description = "Blocks accidental cluster deletion via Terraform."
 }
 
+variable "rbac_security_group" {
+  type        = string
+  default     = null
+  description = <<-EOT
+    Google Group whose nested groups drive Kubernetes RBAC. GKE requires the
+    name to be exactly `gke-security-groups@<domain>`; other groups are nested
+    inside it. Null disables group-based RBAC.
+  EOT
+
+  validation {
+    condition     = var.rbac_security_group == null || can(regex("^gke-security-groups@", var.rbac_security_group))
+    error_message = "rbac_security_group must be named gke-security-groups@<domain> — GKE rejects any other name."
+  }
+}
+
 variable "config_sync" {
   type = object({
     repo       = string

@@ -64,11 +64,20 @@ resource "google_project_iam_member" "platform" {
   member  = var.platform_group
 }
 
+# Deliberately not `roles/viewer`. A basic role grants read on every service in
+# the project including ones added years from now, which is the opposite of a
+# reviewable grant. These predefined roles cover what a security reviewer
+# actually needs, and adding a service means consciously adding its viewer role.
 resource "google_project_iam_member" "security_view" {
   for_each = toset([
-    "roles/viewer",
+    "roles/iam.securityReviewer",
     "roles/logging.privateLogViewer",
     "roles/securitycenter.findingsViewer",
+    "roles/container.viewer",
+    "roles/cloudsql.viewer",
+    "roles/compute.networkViewer",
+    "roles/cloudkms.viewer",
+    "roles/monitoring.viewer",
   ])
 
   project = google_project.this.project_id

@@ -61,6 +61,8 @@ module "cell" {
   wif_pool_id              = data.terraform_remote_state.bootstrap.outputs.wif_pool_id
   github_repository        = var.github_repository
 
+  rbac_security_group = var.rbac_security_group
+
   config_sync_repo   = var.config_sync_repo
   config_sync_branch = var.config_sync_branch
 

@@ -176,6 +176,51 @@ resource "google_project_service" "security" {
   disable_dependent_services = false
 }
 
+# Reads of the audit archive are themselves auditable. A separate bucket,
+# because an archive that records its own access can be tampered with by anyone
+# who can write to it.
+resource "google_storage_bucket" "audit_access_logs" {
+  # checkov:skip=CKV_GCP_62:An access-log bucket cannot log its own access without recursing. This is the end of the chain.
+  project  = google_project.security.project_id
+  name     = "${var.audit_log_bucket}-access-logs"
+  location = var.primary_region
+
+  public_access_prevention    = "enforced"
+  uniform_bucket_level_access = true
+
+  # Preserves the record of who read the audit archive even if someone deletes
+  # it — see the equivalent bucket in stacks/bootstrap.
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 400
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  lifecycle_rule {
+    condition {
+      num_newer_versions = 3
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  depends_on = [google_project_service.security]
+}
+
+resource "google_storage_bucket_iam_member" "audit_access_log_writer" {
+  bucket = google_storage_bucket.audit_access_logs.name
+  role   = "roles/storage.objectCreator"
+  member = "group:cloud-storage-analytics@google.com"
+}
+
 resource "google_storage_bucket" "audit" {
   project  = google_project.security.project_id
   name     = var.audit_log_bucket
@@ -183,6 +228,11 @@ resource "google_storage_bucket" "audit" {
 
   public_access_prevention    = "enforced"
   uniform_bucket_level_access = true
+
+  logging {
+    log_bucket        = google_storage_bucket.audit_access_logs.name
+    log_object_prefix = "audit/"
+  }
 
   versioning {
     enabled = true
@@ -241,6 +291,39 @@ resource "google_storage_bucket_iam_member" "org_sink_writer" {
   member = google_logging_organization_sink.audit.writer_identity
 }
 
+# The two platform projects get the same audit configuration cells get. The
+# security project is where the evidence lives and the shared project is where
+# every image comes from — both are higher-value targets than any single cell.
+resource "google_project_iam_audit_config" "security" {
+  project = google_project.security.project_id
+  service = "allServices"
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
+resource "google_project_iam_audit_config" "shared" {
+  project = google_project.shared.project_id
+  service = "allServices"
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
 # --- Shared project: the container registry -------------------------------------------
 # Images are built once here and promoted by digest into every cell. Cells hold
 # read-only access and no cell can write to it, which is what keeps a compromised
@@ -271,12 +354,41 @@ resource "google_project_service" "shared" {
   disable_dependent_services = false
 }
 
+# Images are encrypted with our own key, like every other data store in the
+# platform. The registry is the one artefact every cell pulls from, so losing
+# control of it would be losing control of what runs everywhere.
+resource "google_kms_key_ring" "registry" {
+  project  = google_project.shared.project_id
+  name     = "registry"
+  location = var.primary_region
+
+  depends_on = [google_project_service.shared]
+}
+
+resource "google_kms_crypto_key" "registry" {
+  name            = "images"
+  key_ring        = google_kms_key_ring.registry.id
+  rotation_period = "7776000s"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "google_kms_crypto_key_iam_member" "registry" {
+  crypto_key_id = google_kms_crypto_key.registry.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${google_project.shared.number}@gcp-sa-artifactregistry.iam.gserviceaccount.com"
+}
+
 resource "google_artifact_registry_repository" "images" {
   project       = google_project.shared.project_id
   location      = var.primary_region
   repository_id = "images"
   format        = "DOCKER"
   description   = "Shared container images. Built once, promoted by digest."
+
+  kms_key_name = google_kms_crypto_key.registry.id
 
   docker_config {
     # A tag that can be moved is not an artifact reference. Immutable tags mean

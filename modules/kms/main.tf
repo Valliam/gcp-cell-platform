@@ -27,6 +27,9 @@ locals {
     ]
     secrets = [
       "serviceAccount:service-${var.project_number}@gcp-sa-secretmanager.iam.gserviceaccount.com",
+      # Pub/Sub uses the same key: the secret-rotation topic carries the name of
+      # a secret due for rotation, which is worth encrypting with our key too.
+      "serviceAccount:service-${var.project_number}@gcp-sa-pubsub.iam.gserviceaccount.com",
     ]
   }
 

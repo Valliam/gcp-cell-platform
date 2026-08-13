@@ -25,6 +25,24 @@ resource "google_project" "bootstrap" {
   }
 }
 
+# The bootstrap project holds the credentials of last resort, so every read and
+# write against it is recorded. Cell projects get the same treatment in
+# modules/project.
+resource "google_project_iam_audit_config" "bootstrap" {
+  project = google_project.bootstrap.project_id
+  service = "allServices"
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
 resource "google_project_service" "bootstrap" {
   for_each = toset([
     "cloudresourcemanager.googleapis.com",
@@ -68,10 +86,61 @@ resource "google_kms_crypto_key_iam_member" "state" {
   member        = "serviceAccount:service-${google_project.bootstrap.number}@gs-project-accounts.iam.gserviceaccount.com"
 }
 
+# Who read the state bucket is a question worth being able to answer: state
+# describes every resource in the estate. Access logs go to a separate bucket so
+# reading state does not also let you edit the record of having read it.
+resource "google_storage_bucket" "access_logs" {
+  # checkov:skip=CKV_GCP_62:An access-log bucket cannot log its own access without recursing. This is the end of the chain.
+  project  = google_project.bootstrap.project_id
+  name     = "${var.state_bucket}-access-logs"
+  location = var.state_location
+
+  public_access_prevention    = "enforced"
+  uniform_bucket_level_access = true
+
+  # Access logs are written once and never modified, so versioning is not about
+  # accidental overwrites — it is about someone deleting the record of having
+  # read state. Non-current versions survive that.
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 400
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  lifecycle_rule {
+    condition {
+      num_newer_versions = 3
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  depends_on = [google_project_service.bootstrap]
+}
+
+resource "google_storage_bucket_iam_member" "access_log_writer" {
+  bucket = google_storage_bucket.access_logs.name
+  role   = "roles/storage.objectCreator"
+  member = "group:cloud-storage-analytics@google.com"
+}
+
 resource "google_storage_bucket" "state" {
   project  = google_project.bootstrap.project_id
   name     = var.state_bucket
   location = var.state_location
+
+  logging {
+    log_bucket        = google_storage_bucket.access_logs.name
+    log_object_prefix = "tfstate/"
+  }
 
   # State files contain resource ids, IP ranges and occasionally generated
   # secrets. Public access must be impossible, not merely unconfigured.

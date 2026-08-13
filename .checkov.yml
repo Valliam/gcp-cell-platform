@@ -1,21 +1,74 @@
 # Checkov configuration.
 #
-# Every skip carries a reason. An unexplained skip list is how a security scan
-# turns into a green tick that means nothing.
+# Every skip carries a reason, and the reason has to survive being read aloud.
+# An unexplained skip list turns a security scan into a green tick that means
+# nothing.
+#
+# Nine findings from the first run were real and were fixed rather than skipped:
+# client-certificate auth, cluster labels, intranode visibility, group-based
+# RBAC, a basic role at project level, bucket access logging on both the state
+# and audit archives, CMEK on the rotation topic and on Artifact Registry, and
+# audit configuration on the three platform projects.
+#
+# What remains is here.
 framework:
   - terraform
 
 skip-check:
-  # Checkov cannot resolve a KMS key passed in as a variable, so it reports
-  # unencrypted resources for every CMEK-enabled cell. The actual control is
-  # enforced by policy/cell.rego, which reads the contract rather than guessing
-  # from HCL.
-  - CKV_GCP_35 # "Ensure Kubernetes cluster nodes have Shielded VM" — set via node_config, not detected through for_each
-  - CKV_GCP_66 # "Ensure GKE uses Binary Authorization" — deliberately deferred, see docs/adr/0008
+  # --- False positives: the control is implemented a different way ------------
 
-  # Cloud SQL public IP is disabled in ip_configuration; the checker looks for a
-  # top-level attribute that does not exist in provider v7.
-  - CKV_GCP_11
+  # "Ensure Network Policy is enabled on Kubernetes Engine Clusters".
+  # The cluster uses Dataplane V2 (`datapath_provider = ADVANCED_DATAPATH`),
+  # which enforces NetworkPolicy in eBPF and additionally emits policy logs.
+  # The legacy `network_policy` block this check looks for MUST NOT be set
+  # alongside it — the provider rejects the combination. Enforcement is proven
+  # by the default-deny policies in platform/cells/**.
+  - CKV_GCP_12
+
+  # "Ensure the GKE Metadata Server is Enabled".
+  # Set on every node pool via `workload_metadata_config { mode = "GKE_METADATA" }`.
+  # The check reads cluster-level `node_config`, which does not exist here
+  # because `remove_default_node_pool = true` — every pool is a separate
+  # resource, which is the point of ADR 0004.
+  - CKV_GCP_69
+
+  # "Ensure all Cloud SQL database instances require all incoming connections
+  # to use SSL". Implemented as `ssl_mode = "ENCRYPTED_ONLY"`, which supersedes
+  # the deprecated `require_ssl` boolean the check looks for. The instances also
+  # have no public IP at all.
+  - CKV_GCP_6
+
+  # --- Deliberate, documented decisions ---------------------------------------
+
+  # "Ensure that retention policies on log buckets are configured using Bucket
+  # Lock". The retention policy is configured; locking it is gated behind
+  # `var.lock_audit_retention`, default false. Locking is irreversible — a
+  # locked bucket's retention can never be shortened or removed by anyone — and
+  # doing that in a reference repository would be a permanent mistake. Real
+  # regulated deployments set it true. See stacks/org/main.tf.
+  - CKV2_GCP_4
+
+  # "Ensure basic roles are not used at organization level" and
+  # "Ensure no roles that enable to impersonate and manage all service accounts
+  # are used at an organization level".
+  #
+  # Both apply to the Terraform automation identities in stacks/bootstrap, which
+  # create projects, folders and per-cell service accounts and therefore cannot
+  # be scoped below the organization. The compensating controls are specific:
+  #
+  #   - Two separate identities. `terraform-plan` holds only read roles and is
+  #     the one pull requests can reach; `terraform` can apply and is bound to
+  #     `attribute.ref/refs/heads/main`, so no branch or fork can obtain it.
+  #   - No key exists for either. `iam.disableServiceAccountKeyCreation` is
+  #     enforced org-wide, and access is exclusively via Workload Identity
+  #     Federation.
+  #   - Every action either identity takes is captured by the organization-level
+  #     audit sink into a bucket in a project they cannot delete from.
+  #
+  # Narrowing these further would mean giving up Terraform-managed project
+  # creation, which is the foundation of the cell model.
+  - CKV_GCP_115
+  - CKV_GCP_45
 
 quiet: true
 compact: true
